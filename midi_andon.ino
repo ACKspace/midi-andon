@@ -26,13 +26,33 @@ namespace ProgramMode
     };
 }
 
-byte initialbyte;
 byte g_channel;
 byte g_velocity;
 byte g_midimode;
-byte lamp;
-byte value;
-byte velocities[127] = {0};
+byte g_nSelectedLamp;
+byte g_nProgramtick;
+byte g_nMidiVelocities[127] = {0};
+// TODO: 254 g_velocities: channels 1-112 are used
+//  1-32: channel 1-32 fader volume
+// 33-48: bus 1-16
+// 49-52: aux send master
+// 53-56: fx send master
+// 57-60: fx return 1-4 (L of pair)
+// 61: main mix
+// 62-63: NOT USED
+// 64-95: pan channel 1-32
+// 96-99: fx pan return 1-4 (L of pair)
+// 100: master pan
+// 101-103: NOT USED
+// 104: Channel mute (0,1-61) on
+// 105: Channel mute (0,1-61) off
+// 106: snapshot save (0,1-61) on
+// 107: snapshot save (0,1-61) off
+// 108: automation rec/play set (0,1-61) manual
+// 109: automation rec/play set (0,1-61) rec ready
+// 110: automation rec/play set (0,1-61) record
+// 111: automation rec/play set (0,1-61) fadeback
+// 112: automation rec/play set (0,1-61) play
 
 volatile int g_nHoldCounter;
 volatile ButtonState::Enum g_buttonState;
@@ -48,18 +68,18 @@ int debounce_count = 10;
 
 #define ACTIVITYLED 13
 #define PUSHBUTTON 52
-#define RELAY 7
 #define LAMP1 6
 #define LAMP2 5
 #define LAMP3 4
 #define LAMP4 3
-#define LAMP5 2
+//Note that LAMP5 is not connected but is wired next to lamp 1 (white cable)
+#define RELAY 2
 
 #define MIDI_START          0x80
 #define MIDI_PROGRAM_CHANGE 0xB0
 #define MIDI_MASK_OMNI      0xf0
 #define MIDI_INVALID        0xFF
-#define MIDI_MASK_ABOVE     0x80
+#define MIDI_FLAG_ABOVE     0x80
 
 ////////////////////////////////////////////////////////////////////
 // setup
@@ -68,15 +88,34 @@ void setup()
 {
   pinMode( ACTIVITYLED, OUTPUT );
   pinMode( PUSHBUTTON, INPUT_PULLUP );
-  for ( byte nPin = LAMP5; nPin <= RELAY; nPin++ )
+  for ( byte nPin = RELAY; nPin <= LAMP1; nPin++ )
     pinMode( nPin, OUTPUT );
+
+  // Initializing..
+  delay( 200 );
+  // Display version/revision
+  digitalWrite( LAMP1, HIGH );
+  delay( 2000 );
+
+  resetLamp();
+  // TODO: verify ROM
+  delay( 500 );
+  digitalWrite( LAMP1, HIGH );
+  delay( 500 );
+  digitalWrite( LAMP2, HIGH );
+  delay( 500 );
+  digitalWrite( LAMP3, HIGH );
+  delay( 500 );
+  digitalWrite( LAMP4, HIGH );
+  delay( 500 );
+  resetLamp();  
 
   // Assume program change
   g_midimode = MIDI_PROGRAM_CHANGE;
 
   g_nHoldCounter = 0;
   g_buttonState = ButtonState::None;
-  g_programMode = ProgramMode::Demo; //M_NORMAL
+  g_programMode = ProgramMode::Normal; //Demo or Normal
 
   // Open serial communications and wait for port to open:
   Serial.begin( 115200 );
@@ -89,8 +128,8 @@ void setup()
   while (!Serial2);
   Serial.println( "done.." );
 
-  value = 0;
-  lamp = 0;
+  g_nProgramtick = 0;
+  g_nSelectedLamp = 0;
 
   resetLamp();
 }
@@ -143,7 +182,7 @@ void loop()
 
 void resetLamp()
 {
-  for ( byte nPin = LAMP5; nPin <= RELAY; nPin++ )
+  for ( byte nPin = RELAY; nPin <= LAMP1; nPin++ )
     digitalWrite( nPin, LOW );
 }
 
@@ -152,7 +191,7 @@ void resetLamp()
 ////////////////////////////////////////////////////////////////////
 void handleMidiMessage()
 {
-  // handle midi signals
+  byte initialbyte;
   
   // Always clear g_channel to make sure we only handle it once per tick
   g_channel = MIDI_INVALID;
@@ -299,7 +338,7 @@ void handleButton()
 ////////////////////////////////////////////////////////////////////
 void doDemoTick()
 {
-  value++;
+  g_nProgramtick++;
 
   switch ( g_buttonState )
   {
@@ -316,22 +355,22 @@ void doDemoTick()
       break;
 
     default:
-      if ( value > 50 && value < 100 )
+      if ( g_nProgramtick > 50 && g_nProgramtick < 100 )
         digitalWrite( LAMP1, HIGH );
       else
         digitalWrite( LAMP1, LOW );
 
-      if ( value > 100 && value < 150 )
+      if ( g_nProgramtick > 100 && g_nProgramtick < 150 )
         digitalWrite( LAMP2, HIGH );
       else
         digitalWrite( LAMP2, LOW );
 
-      if ( value > 150 && value < 200 )
+      if ( g_nProgramtick > 150 && g_nProgramtick < 200 )
         digitalWrite( LAMP3, HIGH );
       else
         digitalWrite( LAMP3, LOW );
 
-      if ( value > 200 && value < 250 )
+      if ( g_nProgramtick > 200 && g_nProgramtick < 250 )
         digitalWrite( LAMP4, HIGH );
       else
         digitalWrite( LAMP4, LOW );
@@ -368,10 +407,10 @@ void doNormalTick()
         return;
 
       // Updated value?
-      if ( velocities[ g_channel ] == g_velocity )
+      if ( g_nMidiVelocities[ g_channel ] == g_velocity )
         return;
 
-      velocities[ g_channel ] = g_velocity;
+      g_nMidiVelocities[ g_channel ] = g_velocity;
       
       // read the g_velocity flags from eeprom
       
@@ -390,8 +429,8 @@ void doNormalTick()
           digitalWrite( 6 - idx, lights & ( 1 << idx ) );
       }
 
-      // LAMP5?? Relay?
-      digitalWrite( 2, lights & ( 1 << 3 ) );
+      // Relay, tied to light 4 (red)
+      digitalWrite( RELAY, lights & ( 1 << 3 ) );
   }
 };
 
@@ -400,7 +439,7 @@ void doNormalTick()
 ////////////////////////////////////////////////////////////////////
 void doConfigTick()
 {
-  value++;
+  g_nProgramtick++;
 
   switch ( g_buttonState )
   {
@@ -417,82 +456,77 @@ void doConfigTick()
       // Blink the blue led
       resetLamp();
 
-      lamp++;
-      if ( lamp >= 5 )
-        lamp = 0;
+      g_nSelectedLamp++;
+      if ( g_nSelectedLamp >= 5 )
+        g_nSelectedLamp = 0;
       break;
 
     default:
-      if ( value > 127 )
-        digitalWrite( lamp + 3, HIGH );
+      if ( g_nProgramtick > 127 )
+        digitalWrite( g_nSelectedLamp + 3, HIGH );
       else
-        digitalWrite( lamp + 3, LOW );
+        digitalWrite( g_nSelectedLamp + 3, LOW );
 
       break;
   }
 };
 
 
+#define MEM_SIZE 64
 byte determineLights( )
 {
-  byte lights = 0;
-  byte currentLightBit = 0;
-  int nextLightPos = 0;
+    byte lights = 0;            // Light bitmask
+    byte currentLight = 0;      // Current active light
+    byte nextLightAddress = 0;  // Next light's memory address
 
-  byte memVal;
-  byte chan = MIDI_INVALID;
-  byte vel;
+    byte memVal;
+    byte chan = MIDI_INVALID;
 
-  // Walk the memory and see if the g_channel is in there
-  for ( int idx = 0; idx < 64; idx++ )
-  {
-    memVal = readMemory( idx );
-
-    // increase the light
-    if ( idx == nextLightPos )
+    // Walk the memory
+    for ( byte idx = 0; idx < MEM_SIZE; idx++ )
     {
-      
-      // Increase the bit shifter for lamp flag
-      currentLightBit++;
+        memVal = readMemory( idx );
 
-      // Get the address of the next lamp
-      nextLightPos = memVal;
-      chan = MIDI_INVALID;
-      continue;
-      
-    }
-   
-    // read g_channel and value
-    if ( chan == MIDI_INVALID )
-    {
-      chan = memVal;
-      continue;
-    }
-    
-    vel = memVal;
-       
-    // Got g_velocity: check values
-    // Did the g_channel match?
-    if ( (vel & MIDI_MASK_ABOVE) && velocities[ chan ] > ( vel & ( MIDI_MASK_ABOVE - 1 ) ) )
-    {
-      // g_velocity bigger, set bit
-      lights |= (1 << (currentLightBit - 1) );
-    }
-    else if ( !(vel & MIDI_MASK_ABOVE) && velocities[ chan ] < vel )
-    {
-      // g_velocity smaller, set bit
-      lights |= (1 << (currentLightBit - 1));
-    }
-    else {
-      // no match, clear bit
-      //lights &= ~(1 << currentLightBit);
-    } // flag check
+        if ( !idx )
+        {
+            // First byte is always the next light pos
+            nextLightAddress = memVal;
+        }
+        else if ( idx == nextLightAddress )
+        {
+            // Break out of loop if all lights are read or empty memory
+            if ( (currentLight >= 3) || !memVal || memVal == 0xFF )
+                break;
 
-    // Reset g_channel, so we can read g_velocity      
-    chan = MIDI_INVALID;
-  } // for loop
+            // We reached the next light pos, increase the light counter
+            currentLight++;
 
-  return lights;
+            // Get the address of the next light
+            nextLightAddress = memVal;
+
+            // Reset channel
+            chan = MIDI_INVALID;
+        }
+        else if ( chan == MIDI_INVALID )
+        {
+            chan = memVal;
+        }
+        else
+        {
+            // Check the current stored value with the corresponding midi velocity and set bit if either:
+            // a. above flag set and velocity > memory value (without flag)
+            // b. no flag and velocity < memory value
+            if ( ( (memVal & MIDI_FLAG_ABOVE) && g_nMidiVelocities[ chan ] > ( memVal & ( MIDI_FLAG_ABOVE - 1 ) ) )
+              || ( ( !(memVal & MIDI_FLAG_ABOVE) && g_nMidiVelocities[ chan ] < memVal ) )
+             )
+                lights |= (1 << currentLight );
+
+            // Reset channel, so the next memory value will be assigned as channel
+            chan = MIDI_INVALID;
+        }
+    }
+
+    return lights;
 };
 
 ////////////////////////////////////////////////////////////////////
@@ -501,64 +535,64 @@ byte determineLights( )
 byte readMemory( short _nAddr )
 {
   // TODO: implement o-buffer ROM
-  //byte fakeMem[14] = { 7, 1, 10 | MIDI_MASK_ABOVE, 2, 15 | MIDI_MASK_ABOVE, 3, 100, 0, 4, 100 | MIDI_MASK_ABOVE, 5, 10 | MIDI_MASK_ABOVE, 6, 10 };
+  //byte fakeMem[14] = { 7, 1, 10 | MIDI_FLAG_ABOVE, 2, 15 | MIDI_FLAG_ABOVE, 3, 100, 0, 4, 100 | MIDI_FLAG_ABOVE, 5, 10 | MIDI_FLAG_ABOVE, 6, 10 };
 
   // <absolute index of next color>, [<g_channel>, <threshold>, ...]
-  // (| MIDI_MASK_ABOVE means above, else below)
+  // (| MIDI_FLAG_ABOVE means above, else below)
   // blue, green, orange, red + relay
 byte fakeMem[ ] = {
-  9, 29, 10 | MIDI_MASK_ABOVE, // blue
-     30, 10 | MIDI_MASK_ABOVE,
-     31, 10 | MIDI_MASK_ABOVE,
-     32, 10 | MIDI_MASK_ABOVE,
+  9, 29, 10 | MIDI_FLAG_ABOVE, // blue
+     30, 10 | MIDI_FLAG_ABOVE,
+     31, 10 | MIDI_FLAG_ABOVE,
+     32, 10 | MIDI_FLAG_ABOVE,
  12, 61, 10,                   // green
- 15, 61, 10 | MIDI_MASK_ABOVE, // orange
- 64,  1, 10 | MIDI_MASK_ABOVE, // red
-      2, 10 | MIDI_MASK_ABOVE,
-      3, 10 | MIDI_MASK_ABOVE,
-      4, 10 | MIDI_MASK_ABOVE,
-      5, 10 | MIDI_MASK_ABOVE,
-      6, 10 | MIDI_MASK_ABOVE,
-      7, 10 | MIDI_MASK_ABOVE,
-      8, 10 | MIDI_MASK_ABOVE,
-      9, 10 | MIDI_MASK_ABOVE,
-     10, 10 | MIDI_MASK_ABOVE,
-     11, 10 | MIDI_MASK_ABOVE,
-     12, 10 | MIDI_MASK_ABOVE,
+ 15, 61, 10 | MIDI_FLAG_ABOVE, // orange
+ 64,  1, 10 | MIDI_FLAG_ABOVE, // red
+      2, 10 | MIDI_FLAG_ABOVE,
+      3, 10 | MIDI_FLAG_ABOVE,
+      4, 10 | MIDI_FLAG_ABOVE,
+      5, 10 | MIDI_FLAG_ABOVE,
+      6, 10 | MIDI_FLAG_ABOVE,
+      7, 10 | MIDI_FLAG_ABOVE,
+      8, 10 | MIDI_FLAG_ABOVE,
+      9, 10 | MIDI_FLAG_ABOVE,
+     10, 10 | MIDI_FLAG_ABOVE,
+     11, 10 | MIDI_FLAG_ABOVE,
+     12, 10 | MIDI_FLAG_ABOVE,
      // jack/cinch in
-     17, 10 | MIDI_MASK_ABOVE,
-     18, 10 | MIDI_MASK_ABOVE,
-     19, 10 | MIDI_MASK_ABOVE,
-     20, 10 | MIDI_MASK_ABOVE,
-     21, 10 | MIDI_MASK_ABOVE,
-     22, 10 | MIDI_MASK_ABOVE,
-     23, 10 | MIDI_MASK_ABOVE,
-     24, 10 | MIDI_MASK_ABOVE,
-     25, 10 | MIDI_MASK_ABOVE,
-     26, 10 | MIDI_MASK_ABOVE,
-     27, 10 | MIDI_MASK_ABOVE,
-     28, 10 | MIDI_MASK_ABOVE,
+     17, 10 | MIDI_FLAG_ABOVE,
+     18, 10 | MIDI_FLAG_ABOVE,
+     19, 10 | MIDI_FLAG_ABOVE,
+     20, 10 | MIDI_FLAG_ABOVE,
+     21, 10 | MIDI_FLAG_ABOVE,
+     22, 10 | MIDI_FLAG_ABOVE,
+     23, 10 | MIDI_FLAG_ABOVE,
+     24, 10 | MIDI_FLAG_ABOVE,
+     25, 10 | MIDI_FLAG_ABOVE,
+     26, 10 | MIDI_FLAG_ABOVE,
+     27, 10 | MIDI_FLAG_ABOVE,
+     28, 10 | MIDI_FLAG_ABOVE,
 };
   /*
-  byte fakeMem[ ] = {  3, 13, 10 | MIDI_MASK_ABOVE, // blue
+  byte fakeMem[ ] = {  3, 13, 10 | MIDI_FLAG_ABOVE, // blue
                        6, 61, 10,                   // green
-                      39,  1, 10 | MIDI_MASK_ABOVE, // orange
-                           2, 10 | MIDI_MASK_ABOVE,
-                           3, 10 | MIDI_MASK_ABOVE,
-                           4, 10 | MIDI_MASK_ABOVE,
-                           5, 10 | MIDI_MASK_ABOVE,
-                           6, 10 | MIDI_MASK_ABOVE,
-                           7, 10 | MIDI_MASK_ABOVE,
-                           8, 10 | MIDI_MASK_ABOVE,
-                           9, 10 | MIDI_MASK_ABOVE,
-                          10, 10 | MIDI_MASK_ABOVE,
-                          11, 10 | MIDI_MASK_ABOVE,
-                          12, 10 | MIDI_MASK_ABOVE,
-                          13, 10 | MIDI_MASK_ABOVE,
-                          14, 10 | MIDI_MASK_ABOVE,
-                          15, 10 | MIDI_MASK_ABOVE,
-                          16, 10 | MIDI_MASK_ABOVE,
-                       0, 61,  9 | MIDI_MASK_ABOVE, // red
+                      39,  1, 10 | MIDI_FLAG_ABOVE, // orange
+                           2, 10 | MIDI_FLAG_ABOVE,
+                           3, 10 | MIDI_FLAG_ABOVE,
+                           4, 10 | MIDI_FLAG_ABOVE,
+                           5, 10 | MIDI_FLAG_ABOVE,
+                           6, 10 | MIDI_FLAG_ABOVE,
+                           7, 10 | MIDI_FLAG_ABOVE,
+                           8, 10 | MIDI_FLAG_ABOVE,
+                           9, 10 | MIDI_FLAG_ABOVE,
+                          10, 10 | MIDI_FLAG_ABOVE,
+                          11, 10 | MIDI_FLAG_ABOVE,
+                          12, 10 | MIDI_FLAG_ABOVE,
+                          13, 10 | MIDI_FLAG_ABOVE,
+                          14, 10 | MIDI_FLAG_ABOVE,
+                          15, 10 | MIDI_FLAG_ABOVE,
+                          16, 10 | MIDI_FLAG_ABOVE,
+                       0, 61,  9 | MIDI_FLAG_ABOVE, // red
                       };
                       */
   return fakeMem[ _nAddr ];
