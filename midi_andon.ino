@@ -26,9 +26,9 @@ namespace ProgramMode
     };
 }
 
-byte g_channel;
-byte g_velocity;
-byte g_midimode;
+byte g_channel[ 2 ];
+byte g_velocity[ 2 ];
+byte g_midimode[ 2 ];
 byte g_nSelectedLamp;
 byte g_nProgramtick;
 byte g_nMidiVelocities[127] = {0};
@@ -86,46 +86,56 @@ int debounce_count = 10;
 ////////////////////////////////////////////////////////////////////
 void setup()  
 {
+  // wait for serial port to connect. Needed for Leonardo only
+  // Open serial communications and wait for port to open:
+  Serial.begin( 115200 );
+  while (!Serial);
+  Serial.println( "initializing.." );
+  Serial.println( "outputs" );
   pinMode( ACTIVITYLED, OUTPUT );
   pinMode( PUSHBUTTON, INPUT_PULLUP );
   for ( byte nPin = RELAY; nPin <= LAMP1; nPin++ )
     pinMode( nPin, OUTPUT );
 
-  // Initializing..
+  Serial.println( "midi" );
+  while (!Serial1);
+  Serial1.begin( 31250 );
+  while (!Serial2);
+  Serial2.begin( 31250 );
+
   delay( 200 );
   // Display version/revision
-  digitalWrite( LAMP1, HIGH );
+  digitalWrite( LAMP2, HIGH );
+  Serial.println( "software v2" );
   delay( 2000 );
 
   resetLamp();
   // TODO: verify ROM
+  Serial.print( "verifying ROM." );
   delay( 500 );
   digitalWrite( LAMP1, HIGH );
+  Serial.print( "." );
   delay( 500 );
   digitalWrite( LAMP2, HIGH );
+  Serial.print( "." );
   delay( 500 );
   digitalWrite( LAMP3, HIGH );
+  Serial.print( "." );
   delay( 500 );
   digitalWrite( LAMP4, HIGH );
+  Serial.print( "." );
   delay( 500 );
+  Serial.println( "ok" );
   resetLamp();  
 
   // Assume program change
-  g_midimode = MIDI_PROGRAM_CHANGE;
+  g_midimode[ 1 ] = MIDI_PROGRAM_CHANGE;
+  g_midimode[ 2 ] = MIDI_PROGRAM_CHANGE;
 
   g_nHoldCounter = 0;
   g_buttonState = ButtonState::None;
   g_programMode = ProgramMode::Normal; //Demo or Normal
 
-  // Open serial communications and wait for port to open:
-  Serial.begin( 115200 );
-  //Serial1.begin( 31250 );
-  Serial2.begin( 31250 );
-
-  // wait for serial port to connect. Needed for Leonardo only
-  while (!Serial);
-  //while (!Serial1);
-  while (!Serial2);
   Serial.println( "done.." );
 
   g_nProgramtick = 0;
@@ -144,7 +154,8 @@ void loop()
   while( millis() == time );
   time = millis();
 
-  handleMidiMessage();
+  //handleMidiMessage( Serial1, 0 );
+  handleMidiMessage( Serial2, 1 );
   handleButton();
 
   // Handle the current user mode
@@ -189,17 +200,17 @@ void resetLamp()
 ////////////////////////////////////////////////////////////////////
 // handleMidiMessage
 ////////////////////////////////////////////////////////////////////
-void handleMidiMessage()
+void handleMidiMessage( const Stream& _serial, uint8_t _nIndex )
 {
   byte initialbyte;
   
   // Always clear g_channel to make sure we only handle it once per tick
-  g_channel = MIDI_INVALID;
+  g_channel[ _nIndex ] = MIDI_INVALID;
 
-  if( Serial2.available() > 0 )
+  if( _serial.available() > 0 )
   {
     digitalWrite( ACTIVITYLED, HIGH );
-    initialbyte = Serial2.read(); 
+    initialbyte = _serial.read(); 
 #ifdef DEBUG
   Serial.write( "midi message: " );
   Serial.println( initialbyte, HEX ); 
@@ -208,22 +219,22 @@ void handleMidiMessage()
     // Start of MIDI message? Assign mode
     if ( (initialbyte & MIDI_START) == MIDI_START )
     {
-      g_midimode = initialbyte;
+      g_midimode[ _nIndex ] = initialbyte;
       // Clear g_channel byte
       //g_channel = MIDI_INVALID;
     }
     else
     {
       // No mode change, Copy over byte as channel
-      g_channel = initialbyte;
+      g_channel[ _nIndex ] = initialbyte + (1-_nIndex) * 128;
     }
     
 #ifdef DEBUG
     Serial.print( "midi cmd:" );
-    Serial.println( g_midimode, HEX );
+    Serial.println( g_midimode[ _nIndex ], HEX );
 #endif
     // Mask out g_channel (omni-receive) and check which midi command we have
-    switch ( g_midimode & MIDI_MASK_OMNI )
+    switch ( g_midimode[ _nIndex ] & MIDI_MASK_OMNI )
     {
       case MIDI_PROGRAM_CHANGE: // Program change (3 bytes)
 #ifdef DEBUG
@@ -231,20 +242,20 @@ void handleMidiMessage()
 #endif
 
         // No g_channel set yet?
-        if ( g_channel == MIDI_INVALID )
+        if ( g_channel[ _nIndex ] == MIDI_INVALID )
         {
-          while( !Serial2.available() );
-          g_channel = Serial2.read();
+          while( !_serial.available() );
+          g_channel[ _nIndex ] = _serial.read() + (1-_nIndex) * 128;
 #ifdef DEBUG
-  Serial.print( g_channel, HEX );
+  Serial.print( g_channel[ _nIndex ], HEX );
   Serial.print( " " );
 #endif
         }
 
-        while( !Serial2.available() );
-        g_velocity = Serial2.read();
+        while( !_serial.available() );
+        g_velocity[ _nIndex ] = _serial.read();
 #ifdef DEBUG
-  Serial.print( g_velocity, HEX );
+  Serial.print( g_velocity[ _nIndex ], HEX );
 #endif
 
         break;
@@ -403,34 +414,37 @@ void doNormalTick()
       //Serial.print( "normal tick" );
 
       // Channel info
-      if ( g_channel == MIDI_INVALID )
-        return;
-
-      // Updated value?
-      if ( g_nMidiVelocities[ g_channel ] == g_velocity )
-        return;
-
-      g_nMidiVelocities[ g_channel ] = g_velocity;
-      
-      // read the g_velocity flags from eeprom
-      
-      byte lights = determineLights( );
-      Serial.print( "l:" );
-      Serial.println( lights, BIN );
-
-      // TODO: work out all lights and their modes
-      digitalWrite( ACTIVITYLED, lights );
-
-      for ( byte idx = 0; idx < 5; idx++ )
+      for ( uint8_t nIndex = 0; nIndex < 2; nIndex++ )
       {
-        if ( lights & ( 1 << idx ) )
-          digitalWrite( 6 - idx, lights & ( 1 << idx ) );
-        else
-          digitalWrite( 6 - idx, lights & ( 1 << idx ) );
-      }
+        if ( g_channel[ nIndex ] == MIDI_INVALID )
+          continue;
+  
+        // Updated value?
+        if ( g_nMidiVelocities[ g_channel[ nIndex ] ] == g_velocity[ nIndex ] )
+          continue;
 
-      // Relay, tied to light 4 (red)
-      digitalWrite( RELAY, lights & ( 1 << 3 ) );
+        g_nMidiVelocities[ g_channel[ nIndex ] ] = g_velocity[ nIndex ];
+        
+        // read the g_velocity flags from eeprom
+        
+        byte lights = determineLights( );
+        Serial.print( "l:" );
+        Serial.println( lights, BIN );
+  
+        // TODO: work out all lights and their modes
+        digitalWrite( ACTIVITYLED, lights );
+  
+        for ( byte idx = 0; idx < 5; idx++ )
+        {
+          if ( lights & ( 1 << idx ) )
+            digitalWrite( 6 - idx, lights & ( 1 << idx ) );
+          else
+            digitalWrite( 6 - idx, lights & ( 1 << idx ) );
+        }
+  
+        // Relay, tied to light 4 (red)
+        digitalWrite( RELAY, lights & ( 1 << 3 ) );
+      }
   }
 };
 
